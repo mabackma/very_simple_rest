@@ -1,7 +1,8 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use std::collections::HashSet;
-use syn::{parse_macro_input, DeriveInput};
+use syn::{parse_macro_input, DeriveInput, Lit};
+use sqlx::{SqlitePool, MySqlPool, PgPool, AnyPool};
 
 #[proc_macro_derive(RestApi, attributes(rest_api, require_role, relation))]
 pub fn rest_api_macro(input: TokenStream) -> TokenStream {
@@ -18,7 +19,30 @@ pub fn rest_api_macro(input: TokenStream) -> TokenStream {
     let mut update_clauses = vec![];
     let mut skip_insert_fields = HashSet::new();
 
-    let db_type = "sqlite";
+    let mut db_type = "sqlite".to_string(); // default
+
+    for attr in &input.attrs {
+        if attr.path().is_ident("rest_api") {
+            let _ = attr.parse_nested_meta(|meta| {
+                let ident = meta.path.get_ident().unwrap().to_string();
+                let value = meta.value()?.parse::<Lit>()?;
+                if ident == "db" {
+                    if let Lit::Str(litstr) = value {
+                        db_type = litstr.value();
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
+
+    let pool_type = match db_type.as_str() {
+        "sqlite" => quote! { SqlitePool },
+        "mysql" => quote! { MySqlPool },
+        "postgres" => quote! { PgPool },
+        _ => quote! { AnyPool },
+    };
+
     let table_name = lower_name.clone();
     let id_field = "id";
 
@@ -373,12 +397,12 @@ pub fn rest_api_macro(input: TokenStream) -> TokenStream {
         mod #module_ident {
             use super::*;
             use actix_web::{web, HttpResponse, Responder};
-            use sqlx::AnyPool;
+            use sqlx::{SqlitePool, MySqlPool, PgPool, AnyPool};
             // Access UserContext through the core module which is re-exported in rest_api
             use very_simple_rest::core::auth::UserContext;
 
             impl #struct_name {
-                pub fn configure(cfg: &mut web::ServiceConfig, db: AnyPool) {
+                pub fn configure(cfg: &mut web::ServiceConfig, db: #pool_type) {
                     let db = web::Data::new(db);
                     cfg.app_data(db.clone());
                     actix_web::rt::spawn(Self::create_table_if_not_exists(db.clone()));
@@ -399,12 +423,12 @@ pub fn rest_api_macro(input: TokenStream) -> TokenStream {
                     #nested_route_registration
                 }
 
-                async fn create_table_if_not_exists(db: web::Data<AnyPool>) {
+                async fn create_table_if_not_exists(db: web::Data<#pool_type>) {
                     let sql = format!("CREATE TABLE IF NOT EXISTS {} ({})", #table_name, #field_defs_sql);
                     let _ = sqlx::query(&sql).execute(db.get_ref()).await;
                 }
 
-                async fn get_all(user: UserContext, db: web::Data<AnyPool>) -> impl Responder {
+                async fn get_all(user: UserContext, db: web::Data<#pool_type>) -> impl Responder {
                     #read_check
 
                     let sql = format!("SELECT * FROM {}", #table_name);
@@ -414,7 +438,7 @@ pub fn rest_api_macro(input: TokenStream) -> TokenStream {
                     }
                 }
 
-                async fn get_one(path: web::Path<i64>, user: UserContext, db: web::Data<AnyPool>) -> impl Responder {
+                async fn get_one(path: web::Path<i64>, user: UserContext, db: web::Data<#pool_type>) -> impl Responder {
                     #read_check
 
                     let sql = format!("SELECT * FROM {} WHERE {} = ?", #table_name, #id_field);
@@ -429,7 +453,7 @@ pub fn rest_api_macro(input: TokenStream) -> TokenStream {
                     }
                 }
 
-                async fn create(item: web::Json<Self>, user: UserContext, db: web::Data<AnyPool>) -> impl Responder {
+                async fn create(item: web::Json<Self>, user: UserContext, db: web::Data<#pool_type>) -> impl Responder {
                     #update_check
 
                     let sql = format!("INSERT INTO {} ({}) VALUES ({})", #table_name, #insert_fields_csv, #insert_placeholders);
@@ -441,7 +465,7 @@ pub fn rest_api_macro(input: TokenStream) -> TokenStream {
                     }
                 }
 
-                async fn update(path: web::Path<i64>, item: web::Json<Self>, user: UserContext, db: web::Data<AnyPool>) -> impl Responder {
+                async fn update(path: web::Path<i64>, item: web::Json<Self>, user: UserContext, db: web::Data<#pool_type>) -> impl Responder {
                     #update_check
 
                     let sql = format!("UPDATE {} SET {} WHERE {} = ?", #table_name, #update_sql, #id_field);
@@ -454,7 +478,7 @@ pub fn rest_api_macro(input: TokenStream) -> TokenStream {
                     }
                 }
 
-                async fn delete(path: web::Path<i64>, user: UserContext, db: web::Data<AnyPool>) -> impl Responder {
+                async fn delete(path: web::Path<i64>, user: UserContext, db: web::Data<#pool_type>) -> impl Responder {
                     #delete_check
 
                     let sql = format!("DELETE FROM {} WHERE {} = ?", #table_name, #id_field);

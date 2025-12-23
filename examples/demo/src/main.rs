@@ -1,3 +1,4 @@
+use sqlx::{Sqlite, SqlitePool};
 use very_simple_rest::prelude::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, RestApi)]
@@ -86,13 +87,16 @@ async fn main() -> std::io::Result<()> {
     sqlx::any::install_default_drivers();
 
     info!("Connecting to database...");
-    let pool = AnyPool::connect("sqlite:app.db?mode=rwc").await.unwrap();
+    let pool = SqlitePool::connect("sqlite:app.db?mode=rwc").await.unwrap();
+    let any_pool = AnyPool::connect("sqlite:app.db?mode=rwc").await.unwrap();
+
     info!("Database connection established");
 
     // Tables will be automatically created by the RestApi macro
     info!("Configuring server with automatic table creation...");
 
     let server_pool = pool.clone();
+    let server_any_pool = any_pool.clone();
     let server = HttpServer::new(move || {
         // Configure CORS for frontend
         let cors = Cors::default()
@@ -108,19 +112,19 @@ async fn main() -> std::io::Result<()> {
             // Api routes
             .service(
                 scope("/api")
-                    .configure(|cfg| auth::auth_routes(cfg, server_pool.clone()))
+                    .configure(|cfg| auth::auth_routes(cfg, server_any_pool.clone()))
                     .configure(|cfg| User::configure(cfg, server_pool.clone()))
                     .configure(|cfg| Post::configure(cfg, server_pool.clone()))
                     .configure(|cfg| Comment::configure(cfg, server_pool.clone())),
             )
             // Serve static files from the public directory
-            .service(fs::Files::new("/", "examples/demo/public").index_file("index.html"))
+            .service(fs::Files::new("/", "public").index_file("index.html"))
     })
     .bind(("127.0.0.1", 8080))?;
 
     // Check for admin user or create one interactively if needed
     info!("Checking for admin user...");
-    match auth::ensure_admin_exists(&pool).await {
+    match auth::ensure_admin_exists(&any_pool).await {
         Ok(true) => info!("Admin user is ready for login"),
         Ok(false) => {
             error!("Failed to create admin user - shutting down");

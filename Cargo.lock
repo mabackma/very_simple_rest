@@ -2115,6 +2115,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rest_macro_core",
+ "sqlx",
  "syn",
 ]
 
